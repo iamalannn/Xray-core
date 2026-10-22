@@ -71,6 +71,12 @@ func (c *Conn) NegotiatedProtocol() string {
 
 // Client initiates a TLS client handshake on the given connection.
 func Client(c net.Conn, config *tls.Config) net.Conn {
+	cleanSNI, mutOpts := ParseSNIMutationTag(config.ServerName)
+	config.ServerName = cleanSNI
+	if mutOpts.DecoySNI != "" {
+		mutOpts.RawGreaseInject = true
+	}
+	c = NewCustomConnWrapper(c, mutOpts)
 	tlsConn := tls.Client(c, config)
 	return &Conn{Conn: tlsConn}
 }
