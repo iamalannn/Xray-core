@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	mrand "math/rand"
 	"net"
 	"strconv"
@@ -229,6 +230,7 @@ func BuildPhantomSNIPayload(opts MutationOptions) []byte {
 	return buf.Bytes()
 }
 
+// ApplyUTLSGreasePhantomSNI بازسازی اجباری بایت‌های Raw در uTLS پس از انتقال SNI به انتهای پکت
 func ApplyUTLSGreasePhantomSNI(uConn *utls.UConn, opts MutationOptions) error {
 	if !opts.Enabled || opts.DecoySNI == "" {
 		return nil
@@ -261,6 +263,7 @@ func ApplyUTLSGreasePhantomSNI(uConn *utls.UConn, opts MutationOptions) error {
 			e.ServerName = strings.ToLower(strings.TrimSpace(e.ServerName))
 			sniExt = e
 		case *utls.UtlsPaddingExtension:
+			// حذف پدینگ خودکار کروم تا طول کل و محل SNI در انتهای پکت خراب نشود
 			continue
 		case *utls.UtlsPreSharedKeyExtension:
 			pskExt = e
@@ -284,7 +287,9 @@ func ApplyUTLSGreasePhantomSNI(uConn *utls.UConn, opts MutationOptions) error {
 	}
 
 	uConn.Extensions = result
-	return uConn.BuildHandshakeState()
+	// نکته حیاتی: پاک کردن کش بایت‌های قبلی و مجبور کردن uTLS به سریالایز مجدد با ترتیب جدید اکستنشن‌ها!
+	uConn.HandshakeState.Hello.Raw = nil
+	return uConn.MarshalClientHello()
 }
 
 type CustomConnWrapper struct {
@@ -370,6 +375,8 @@ func (w *CustomConnWrapper) Write(b []byte) (int, error) {
 
 	if w.opts.Split != SplitNone {
 		if splitPkts, ok := splitTLSRecordStructurally(packet, w.opts.Split, outerVer); ok {
+			fmt.Printf("[AlanNG-Mutator] Structural Split Active: Rec1=%d bytes (Decoy=%s), Rec2=%d bytes (RealSNI)\n",
+				len(splitPkts[0]), w.opts.DecoySNI, len(splitPkts[1]))
 			if err := w.sendFirstRecord(splitPkts[0]); err != nil {
 				return 0, err
 			}
@@ -436,7 +443,6 @@ func (w *CustomConnWrapper) writeWithDetachedOOB(packet []byte) error {
 	return err
 }
 
-// splitTLSRecordStructurally پیمایش دقیق TLV اکستنشن‌ها برای یافتن آخرین اکستنشن 0x0000 (SNI اصلی)
 func splitTLSRecordStructurally(record []byte, boundary SplitBoundary, outerVer uint16) ([2][]byte, bool) {
 	var out [2][]byte
 	if len(record) < 44 || record[0] != 0x16 {
