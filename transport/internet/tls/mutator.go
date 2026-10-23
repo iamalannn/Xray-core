@@ -19,87 +19,84 @@ import (
 type CarrierType int
 
 const (
-	CarrierGreaseRandom CarrierType = iota // 0x0a0a .. 0xfafa
-	CarrierPadding0015                     // 0x0015 Non-Zero Padding
-	CarrierLegacyNPN                       // 0x3374 Legacy NPN
+	CarrierGreaseRandom CarrierType = iota
+	CarrierPadding0015
+	CarrierLegacyNPN
 )
 
 type PreambleType int
 
 const (
-	PreambleNone       PreambleType = iota
-	PreambleZeroRecord              // 16 03 01 00 00
-	PreambleAlertWarn               // 15 03 01 00 02 01 00
-	PreambleCCS                     // 14 03 03 00 01 01
+	PreambleNone PreambleType = iota
+	PreambleZeroRecord
+	PreambleAlertWarn
+	PreambleCCS
 )
 
 type SplitBoundary int
 
 const (
-	SplitNone         SplitBoundary = iota
-	SplitAfterCiphers               // برش رکورد TLS دقیقاً بعد از لیست CipherSuites
-	SplitBeforeSNI                  // برش رکورد TLS دقیقاً قبل از اکستنشن SNI اصلی
+	SplitNone SplitBoundary = iota
+	SplitAfterCiphers
+	SplitBeforeSNI
 )
 
 type DetachMode int
 
 const (
-	DetachNone   DetachMode = iota
-	DetachSplit5            // ارسال ۵ بایت هدر رکورد در سگمنت جداگانه
-	DetachOOB               // ارسال ۵ بایت هدر + ۱ بایت Urgent MSG_OOB
+	DetachNone DetachMode = iota
+	DetachSplit5
+	DetachOOB
 )
 
-// MutationOptions ساختار کامل پارامترهای ۵ بُعدی قابل تنظیم در AlanNG
 type MutationOptions struct {
 	Enabled         bool
-	DecoySNI        string        // دامنه سفید (مثلاً shaparak.ir)
-	Carrier         CarrierType   // نوع اکستنشن حامل (grease, pad0015, npn3374)
-	TargetOffset    int           // آفست هدف قبل از SNI اصلی (مثلاً 650 یا 1400 برای سرریز MTU)
-	HighEntropy     bool          // پر کردن پدینگ با بایت‌های شبه‌تصادفی شبیه به KeyShare
-	RepeatCount     int           // تعداد تکرار دامنه سفید در حامل
-	RawGreaseInject bool          // تزریق باینری در صورت عدم استفاده از uTLS
-	Preamble        PreambleType  // رکورد پیش‌پردازه قبل از ClientHello
-	Split           SplitBoundary // برش ساختاری رکورد TLS بدون بریدن رشته SNI
-	OuterVersion    uint16        // تغییر نسخه هدر رکورد (مثلاً 0x0302 یا 0x0300)
-	Detach          DetachMode    // حالت جداسازی هدر ۵ بایتی و بایت OOB
-	OOBByte         byte          // بایت خارج از نوبت
-	JitterMinMs     int           // حداقل تاخیر بین سگمنت‌ها (برای دکل‌های 4G/5G)
-	JitterMaxMs     int           // حداکثر تاخیر بین سگمنت‌ها
+	DecoySNI        string
+	Carrier         CarrierType
+	TargetOffset    int
+	HighEntropy     bool
+	RepeatCount     int
+	RawGreaseInject bool
+	Preamble        PreambleType
+	Split           SplitBoundary
+	OuterVersion    uint16
+	Detach          DetachMode
+	OOBByte         byte
+	JitterMinMs     int
+	JitterMaxMs     int
 }
 
-var greaseTable = []uint16{
-	0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a,
-	0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a,
-	0x8a8a, 0x9a9a, 0xaaaa, 0xbaba,
-	0xcaca, 0xdada, 0xeaea, 0xfafa,
-}
-
-func pickCarrierID(c CarrierType) uint16 {
+func pickCarrierID(c CarrierType, usedGrease map[uint16]bool) uint16 {
 	switch c {
 	case CarrierPadding0015:
 		return 0x0015
 	case CarrierLegacyNPN:
 		return 0x3374
 	default:
-		return greaseTable[mrand.Intn(len(greaseTable))]
+		candidates := []uint16{0xdada, 0xcaca, 0xbaba, 0x9a9a, 0x7a7a, 0x5a5a, 0x3a3a, 0x2a2a}
+		for _, id := range candidates {
+			if !usedGrease[id] {
+				return id
+			}
+		}
+		return 0xdada
 	}
 }
 
-// ParseSNIMutationTag تگ #mut= را از انتهای SNI جدا کرده و ساختار تنظیمات را می‌سازد
 func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) {
 	idx := strings.Index(rawSNI, "#mut=")
 	if idx == -1 {
-		return rawSNI, opts
+		return strings.ToLower(strings.TrimSpace(rawSNI)), opts
 	}
 
-	cleanSNI = rawSNI[:idx]
+	cleanSNI = strings.ToLower(strings.TrimSpace(rawSNI[:idx]))
 	tagPart := rawSNI[idx+5:]
 
-	opts.TargetOffset = 650
+	opts.TargetOffset = 600
 	opts.RepeatCount = 1
 	opts.OOBByte = 0x78
-	opts.JitterMinMs = 2
-	opts.JitterMaxMs = 5
+	opts.JitterMinMs = 20
+	opts.JitterMaxMs = 30
 
 	for _, token := range strings.Split(tagPart, ",") {
 		token = strings.TrimSpace(token)
@@ -109,8 +106,8 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 		switch {
 		case strings.HasPrefix(token, "decoy:") || strings.HasPrefix(token, "grease:"):
 			val := strings.TrimPrefix(strings.TrimPrefix(token, "decoy:"), "grease:")
-			if val != "" {
-				opts.DecoySNI = val
+			if val != "" && val != "none" {
+				opts.DecoySNI = strings.ToLower(strings.TrimSpace(val))
 				opts.Enabled = true
 			}
 		case strings.HasPrefix(token, "carrier:"):
@@ -144,6 +141,8 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 				opts.Preamble = PreambleAlertWarn
 			case "ccs":
 				opts.Preamble = PreambleCCS
+			case "none":
+				opts.Preamble = PreambleNone
 			}
 			opts.Enabled = true
 		case strings.HasPrefix(token, "split:"):
@@ -152,6 +151,8 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 				opts.Split = SplitAfterCiphers
 			case "sni":
 				opts.Split = SplitBeforeSNI
+			case "none":
+				opts.Split = SplitNone
 			}
 			opts.Enabled = true
 		case strings.HasPrefix(token, "ver:"):
@@ -160,6 +161,8 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 				opts.OuterVersion = 0x0302
 			case "0300":
 				opts.OuterVersion = 0x0300
+			case "none", "0301":
+				opts.OuterVersion = 0x0301
 			}
 			opts.Enabled = true
 		case token == "ver02":
@@ -171,6 +174,8 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 				opts.Detach = DetachSplit5
 			case "oob":
 				opts.Detach = DetachOOB
+			case "none":
+				opts.Detach = DetachNone
 			}
 			opts.Enabled = true
 		case token == "oob":
@@ -192,7 +197,6 @@ func ParseSNIMutationTag(rawSNI string) (cleanSNI string, opts MutationOptions) 
 	return cleanSNI, opts
 }
 
-// BuildPhantomSNIPayload ساخت پیلود باینری اکستنشن حامل شامل دامنه سفید + پدینگ (صفر یا آنتروپی بالا)
 func BuildPhantomSNIPayload(opts MutationOptions) []byte {
 	domainBytes := []byte(opts.DecoySNI)
 	domainLen := len(domainBytes)
@@ -225,7 +229,6 @@ func BuildPhantomSNIPayload(opts MutationOptions) []byte {
 	return buf.Bytes()
 }
 
-// ApplyUTLSGreasePhantomSNI تزریق حامل دامنه سفید در ابتدای اکستنشن‌های uTLS و انتقال SNI اصلی به انتهای پکت
 func ApplyUTLSGreasePhantomSNI(uConn *utls.UConn, opts MutationOptions) error {
 	if !opts.Enabled || opts.DecoySNI == "" {
 		return nil
@@ -234,48 +237,50 @@ func ApplyUTLSGreasePhantomSNI(uConn *utls.UConn, opts MutationOptions) error {
 		return err
 	}
 
-	carrierID := pickCarrierID(opts.Carrier)
+	usedGrease := make(map[uint16]bool)
+	for _, ext := range uConn.Extensions {
+		if g, ok := ext.(*utls.UtlsGREASEExtension); ok {
+			usedGrease[g.Value] = true
+		}
+	}
+
+	carrierID := pickCarrierID(opts.Carrier, usedGrease)
 	phantomPayload := BuildPhantomSNIPayload(opts)
 	phantomExt := &utls.GenericExtension{
 		Id:   carrierID,
 		Data: phantomPayload,
 	}
 
-	exts := uConn.Extensions
 	var sniExt utls.TLSExtension
-	filtered := make([]utls.TLSExtension, 0, len(exts)+1)
+	var pskExt utls.TLSExtension
+	filtered := make([]utls.TLSExtension, 0, len(uConn.Extensions)+1)
 
-	for _, ext := range exts {
-		if _, ok := ext.(*utls.SNIExtension); ok {
-			sniExt = ext
+	for _, ext := range uConn.Extensions {
+		switch e := ext.(type) {
+		case *utls.SNIExtension:
+			e.ServerName = strings.ToLower(strings.TrimSpace(e.ServerName))
+			sniExt = e
+		case *utls.UtlsPaddingExtension:
 			continue
-		}
-		if opts.Carrier == CarrierPadding0015 {
-			if _, isPad := ext.(*utls.UtlsPaddingExtension); isPad {
-				continue
+		case *utls.UtlsPreSharedKeyExtension:
+			pskExt = e
+		default:
+			if _, isPSK := ext.(utls.PreSharedKeyExtension); isPSK {
+				pskExt = ext
+			} else {
+				filtered = append(filtered, ext)
 			}
 		}
-		filtered = append(filtered, ext)
 	}
 
-	result := make([]utls.TLSExtension, 0, len(filtered)+2)
+	result := make([]utls.TLSExtension, 0, len(filtered)+3)
 	result = append(result, phantomExt)
-
+	result = append(result, filtered...)
 	if sniExt != nil {
-		n := len(filtered)
-		if n > 0 {
-			if _, isPSK := filtered[n-1].(*utls.UtlsPreSharedKeyExtension); isPSK {
-				result = append(result, filtered[:n-1]...)
-				result = append(result, sniExt, filtered[n-1])
-			} else {
-				result = append(result, filtered...)
-				result = append(result, sniExt)
-			}
-		} else {
-			result = append(result, sniExt)
-		}
-	} else {
-		result = append(result, filtered...)
+		result = append(result, sniExt)
+	}
+	if pskExt != nil {
+		result = append(result, pskExt)
 	}
 
 	uConn.Extensions = result
@@ -325,26 +330,26 @@ func (w *CustomConnWrapper) Write(b []byte) (int, error) {
 	packet := make([]byte, len(b))
 	copy(packet, b)
 
-	// ۱. تزریق Raw در صورتی که از crypto/tls استاندارد استفاده شده باشد
+	recLen := int(binary.BigEndian.Uint16(packet[3:5]))
+	if len(packet) != 5+recLen {
+		return w.Conn.Write(b)
+	}
+
 	if w.opts.RawGreaseInject && w.opts.DecoySNI != "" {
 		if mutatedPkt, err := injectGreasePhantomSNIRaw(packet, w.opts); err == nil {
 			packet = mutatedPkt
 		}
 	}
 
-	// ۲. تغییر نسخه بیرونی هدر رکورد
-	outerVer := uint16(0x0301)
+	outerVer := binary.BigEndian.Uint16(packet[1:3])
 	if w.opts.OuterVersion != 0 {
 		outerVer = w.opts.OuterVersion
 		packet[1] = byte(outerVer >> 8)
 		packet[2] = byte(outerVer)
-	} else {
-		outerVer = binary.BigEndian.Uint16(packet[1:3])
 	}
 
 	w.setNoDelay(true)
 
-	// ۳. ارسال رکورد Preamble در سگمنت مستقل اول
 	if w.opts.Preamble != PreambleNone {
 		var preamble []byte
 		switch w.opts.Preamble {
@@ -363,7 +368,6 @@ func (w *CustomConnWrapper) Write(b []byte) (int, error) {
 		}
 	}
 
-	// ۴. اعمال برش ساختاری رکورد TLS قبل از SNI (در صورت فعال بودن)
 	if w.opts.Split != SplitNone {
 		if splitPkts, ok := splitTLSRecordStructurally(packet, w.opts.Split, outerVer); ok {
 			if err := w.sendFirstRecord(splitPkts[0]); err != nil {
@@ -377,7 +381,6 @@ func (w *CustomConnWrapper) Write(b []byte) (int, error) {
 		}
 	}
 
-	// ۵. ارسال رکورد اصلی (با یا بدون جداسازی هدر ۵ بایتی / OOB)
 	if err := w.sendFirstRecord(packet); err != nil {
 		return 0, err
 	}
@@ -433,7 +436,7 @@ func (w *CustomConnWrapper) writeWithDetachedOOB(packet []byte) error {
 	return err
 }
 
-// splitTLSRecordStructurally شکستن یک رکورد Handshake به دو رکورد معتبر TLS در مرز ساختاری بدون بریدن رشته SNI
+// splitTLSRecordStructurally پیمایش دقیق TLV اکستنشن‌ها برای یافتن آخرین اکستنشن 0x0000 (SNI اصلی)
 func splitTLSRecordStructurally(record []byte, boundary SplitBoundary, outerVer uint16) ([2][]byte, bool) {
 	var out [2][]byte
 	if len(record) < 44 || record[0] != 0x16 {
@@ -472,7 +475,6 @@ func splitTLSRecordStructurally(record []byte, boundary SplitBoundary, outerVer 
 			extLen := int(binary.BigEndian.Uint16(record[pos+2 : pos+4]))
 			if extType == 0x0000 {
 				splitPoint = pos
-				break
 			}
 			pos += 4 + extLen
 		}
@@ -523,7 +525,7 @@ func injectGreasePhantomSNIRaw(record []byte, opts MutationOptions) ([]byte, err
 	extTotalLen := int(binary.BigEndian.Uint16(record[extTotalLenOffset : extTotalLenOffset+2]))
 	extStartOffset := extTotalLenOffset + 2
 
-	carrierID := pickCarrierID(opts.Carrier)
+	carrierID := pickCarrierID(opts.Carrier, nil)
 	phantomPayload := BuildPhantomSNIPayload(opts)
 	greaseExt := make([]byte, 4+len(phantomPayload))
 	binary.BigEndian.PutUint16(greaseExt[0:2], carrierID)
